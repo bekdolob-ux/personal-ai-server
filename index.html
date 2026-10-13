@@ -1,0 +1,133 @@
+
+<!DOCTYPE html>
+<html lang="ky">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal AI</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101010;color:#f5f5f5;font-family:Arial,sans-serif}
+header{padding:18px;background:#171717;border-bottom:1px solid #303030;font-size:21px;font-weight:bold}
+header span{color:#00e676}
+main{max-width:760px;margin:auto;padding:16px}
+#messages{height:62vh;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:8px 0}
+.msg{padding:12px 15px;border-radius:16px;max-width:88%;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
+.user{align-self:flex-end;background:#075c39}
+.ai{align-self:flex-start;background:#222}
+form{position:sticky;bottom:0;background:#101010;padding:12px 0}
+textarea{width:100%;background:#202020;color:white;border:1px solid #383838;border-radius:14px;padding:13px;font-size:16px;resize:vertical}
+.controls{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+button,.filelabel{background:#00e676;color:#07140b;border:0;border-radius:10px;padding:12px 16px;font-weight:bold;cursor:pointer}
+.filelabel{background:#292929;color:white}
+input[type=file]{display:none}
+input[type=password]{width:100%;margin:8px 0;background:#202020;color:white;border:1px solid #383838;border-radius:10px;padding:12px}
+small{color:#aaa}
+</style>
+</head>
+<body>
+<header>✦ Personal <span>AI</span></header>
+<main>
+  <p><small>Жеке AI жардамчы · Кыргызча / Русский</small></p>
+  <label for="key">API Access Key</label>
+  <input id="key" type="password" placeholder="API ачкычыңды киргиз">
+  <div id="messages">
+    <div class="msg ai">Салам! Мен сенин Personal AI жардамчыңмын. Кандай жардам керек?</div>
+  </div>
+  <form id="form">
+    <textarea id="message" rows="2" placeholder="Билгениңди сура..." required></textarea>
+    <div class="controls">
+      <button id="send" type="submit">Жөнөтүү ➤</button>
+      <label class="filelabel" for="image">📷 Сүрөт</label>
+      <input id="image" type="file" accept="image/jpeg,image/png,image/webp">
+      <button type="button" id="clear">Жаңы чат</button>
+    </div>
+    <small id="status"></small>
+  </form>
+</main>
+<script>
+const API = "https://personal-ai-server-kl8q.onrender.com";
+const $ = id => document.getElementById(id);
+const messages = $("messages");
+let session = localStorage.getItem("personal_ai_session");
+if (!session) {
+  session = "user-" + crypto.randomUUID();
+  localStorage.setItem("personal_ai_session", session);
+}
+function add(text, who) {
+  const el = document.createElement("div");
+  el.className = "msg " + who;
+  el.textContent = text;
+  messages.appendChild(el);
+  messages.scrollTop = messages.scrollHeight;
+  return el;
+}
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const prompt = $("message").value.trim();
+  const file = $("image").files[0];
+  if (!prompt && !file) return;
+  const key = $("key").value.trim();
+  if (!key) {
+    $("status").textContent = "API Access Key киргиз.";
+    return;
+  }
+  if (file && file.size > 8*1024*1024) {
+    $("status").textContent = "Сүрөт 8 MB ашпашы керек.";
+    return;
+  }
+  if (prompt) add(prompt, "user");
+  if (file) add("📷 " + file.name, "user");
+  $("message").value = "";
+  $("image").value = "";
+  $("send").disabled = true;
+  $("status").textContent = "AI ойлонуп жатат...";
+  const waiting = add("Жооп күтүп жатам…", "ai");
+  try {
+    const headers = {"X-API-Key": key};
+    let url = API + "/chat";
+    let options = {};
+    if (file) {
+      url = API + "/analyze-image";
+      const data = new FormData();
+      data.append("session_id", session);
+      data.append("message", prompt || "Бул сүрөттө эмне бар? Кыргызча түшүндүр.");
+      data.append("image", file);
+      options = {method:"POST", headers, body:data};
+    } else {
+      options = {
+        method:"POST", headers:{"Content-Type":"application/json", ...headers},
+        body:JSON.stringify({session_id:session,message:prompt})
+      };
+    }
+    const response = await fetch(url, options);
+    const result = await response.json();
+    waiting.textContent = response.ok
+      ? result.reply || "Жооп бош келди."
+      : "Ката: " + (result.error || response.status);
+  } catch(err) {
+    waiting.textContent = "Туташуу катасы. Интернетти жана серверди текшер.";
+  } finally {
+    $("send").disabled = false;
+    $("status").textContent = "";
+  }
+});
+$("clear").addEventListener("click", async () => {
+  if (!confirm("Бул чаттын эс тутумун тазалайлыбы?")) return;
+  try {
+    const r = await fetch(API + "/reset", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-API-Key":$("key").value.trim()},
+      body:JSON.stringify({session_id:session})
+    });
+    if (!r.ok) throw new Error();
+    messages.replaceChildren();
+    add("Жаңы сүйлөшүү башталды.", "ai");
+  } catch {
+    alert("Эс тутум тазаланган жок. API ачкычын текшер.");
+  }
+});
+</script>
+</body>
+      </html>
+      
