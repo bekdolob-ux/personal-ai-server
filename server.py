@@ -1,3 +1,4 @@
+
 import os
 import base64
 import sqlite3
@@ -14,9 +15,31 @@ log = logging.getLogger("personal-ai")
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 9 * 1024 * 1024
 
+# ================= CORS =================
+
+ALLOWED_ORIGIN = "https://bekdolob-ux.github.io"
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin", "")
+    if origin == ALLOWED_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, X-API-Key"
+    )
+    response.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, OPTIONS"
+    )
+    return response
+
+# ================= SETTINGS =================
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv(
-    "GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
+    "GROQ_MODEL",
+    "meta-llama/llama-4-scout-17b-16e-instruct"
 ).strip()
 API_ACCESS_KEY = os.getenv("API_ACCESS_KEY", "").strip()
 
@@ -36,6 +59,8 @@ SYSTEM_PROMPT = """
 Жооптор так, сылык жана практикалык болсун.
 Билбеген маалыматты ойлоп таппа.
 """
+
+# ================= DATABASE =================
 
 def connect_db():
     return sqlite3.connect(str(DB_PATH), timeout=30)
@@ -69,33 +94,44 @@ def get_history(session_id):
             """, (session_id, MAX_HISTORY)).fetchall()
 
     rows.reverse()
-    return [{"role": role, "content": content}
-            for role, content in rows]
+    return [
+        {"role": role, "content": content}
+        for role, content in rows
+    ]
 
 def save_message(session_id, role, content):
     with db_lock:
         with connect_db() as db:
             db.execute("""
-                INSERT INTO messages(session_id, role, content)
+                INSERT INTO messages (session_id, role, content)
                 VALUES (?, ?, ?)
             """, (session_id, role, str(content)[:12000]))
             db.commit()
 
+# ================= SECURITY =================
+
 def check_access():
-    # API_ACCESS_KEY бош болсо, ачык API иштейт.
-    # Коомдук серверде сөзсүз ачкыч коюу сунушталат.
     if not API_ACCESS_KEY:
-        return True
+        return False
 
     supplied = request.headers.get("X-API-Key", "")
     return supplied == API_ACCESS_KEY
 
-def ask_ai(session_id, prompt, image=None, image_mime="image/jpeg"):
+def valid_session(session_id):
+    return bool(session_id) and len(session_id) <= 100
+
+# ================= GROQ AI =================
+
+def ask_ai(session_id, prompt, image=None,
+           image_mime="image/jpeg"):
+
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY орнотулган эмес")
 
     history = get_history(session_id)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
     messages.extend(history)
 
     saved_prompt = prompt or "Сүрөттү талдап бер."
@@ -107,7 +143,9 @@ def ask_ai(session_id, prompt, image=None, image_mime="image/jpeg"):
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{image_mime};base64,{encoded}"
+                    "url": (
+                        f"data:{image_mime};base64,{encoded}"
+                    )
                 }
             }
         ]
@@ -132,22 +170,33 @@ def ask_ai(session_id, prompt, image=None, image_mime="image/jpeg"):
     )
 
     if not response.ok:
-        log.error("Groq API error %s: %s",
-                  response.status_code, response.text[:1000])
+        log.error(
+            "Groq API error %s: %s",
+            response.status_code,
+            response.text[:1000]
+        )
         response.raise_for_status()
 
     data = response.json()
     answer = data["choices"][0]["message"]["content"]
 
     if not isinstance(answer, str) or not answer.strip():
-        answer = "Жооп түзүлбөй калды. Кайра аракет кыл."
+        answer = "Жооп алынган жок. Кайра аракет кыл."
 
     if image is not None:
         saved_prompt += " [Сүрөт тиркелген]"
 
     save_message(session_id, "user", saved_prompt)
     save_message(session_id, "assistant", answer)
+
     return answer.strip()
+
+# ================= ROUTES =================
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+@app.route("/", methods=["OPTIONS"])
+def options_handler(path=""):
+    return "", 204
 
 @app.get("/")
 def home():
@@ -155,6 +204,7 @@ def home():
         "name": "Personal AI Server",
         "status": "running",
         "ai_configured": bool(GROQ_API_KEY),
+        "access_key_configured": bool(API_ACCESS_KEY),
         "image_support": True,
         "memory": "SQLite",
         "platforms": []
@@ -167,13 +217,15 @@ def health():
 @app.post("/chat")
 def chat():
     if not check_access():
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({
+            "error": "API ачкычы туура эмес же орнотулган эмес"
+        }), 401
 
     data = request.get_json(silent=True) or {}
     prompt = str(data.get("message", "")).strip()
     session_id = str(data.get("session_id", "")).strip()
 
-    if not session_id or len(session_id) > 100:
+    if not valid_session(session_id):
         return jsonify({
             "error": "session_id керек (1–100 символ)"
         }), 400
@@ -193,34 +245,35 @@ def chat():
 @app.post("/analyze-image")
 def analyze_image():
     if not check_access():
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "API ачкычы туура эмес"}), 401
 
     session_id = request.form.get("session_id", "").strip()
     prompt = request.form.get(
-        "message", "Бул сүрөттө эмне бар? Түшүндүрүп бер."
+        "message", "Бул сүрөттө эмне бар? Кыргызча түшүндүр."
     ).strip()
     uploaded = request.files.get("image")
 
-    if not session_id or len(session_id) > 100:
-        return jsonify({"error": "session_id керек"}), 400
+    if not valid_session(session_id):
+        return jsonify({"error": "session_id туура эмес"}), 400
 
     if not uploaded:
-        return jsonify({"error": "image файлын тирке"}), 400
+        return jsonify({"error": "Сүрөт тиркелген эмес"}), 400
 
-    allowed_types = {"image/jpeg", "image/png", "image/webp"}
     mime = (uploaded.mimetype or "").lower()
-
-    if mime not in allowed_types:
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
         return jsonify({
-            "error": "JPG, PNG же WEBP сүрөт гана кабыл алынат"
+            "error": "JPG, PNG же WEBP сүрөт жүктө"
         }), 400
 
     image = uploaded.read(MAX_IMAGE_BYTES + 1)
+
     if not image:
         return jsonify({"error": "Сүрөт бош"}), 400
 
     if len(image) > MAX_IMAGE_BYTES:
-        return jsonify({"error": "Сүрөт 8 MB ашпашы керек"}), 413
+        return jsonify({
+            "error": "Сүрөт 8 MB ашпашы керек"
+        }), 413
 
     try:
         answer = ask_ai(session_id, prompt, image, mime)
@@ -228,20 +281,19 @@ def analyze_image():
     except Exception:
         log.exception("Image analysis failed")
         return jsonify({
-            "error": "Сүрөттү талдоо ишке ашкан жок. "
-                     "Модель сүрөт колдой турганын текшер."
+            "error": "Сүрөт талданган жок. Render Logs текшер."
         }), 502
 
 @app.post("/reset")
 def reset_memory():
     if not check_access():
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "API ачкычы туура эмес"}), 401
 
     data = request.get_json(silent=True) or {}
     session_id = str(data.get("session_id", "")).strip()
 
-    if not session_id or len(session_id) > 100:
-        return jsonify({"error": "session_id керек"}), 400
+    if not valid_session(session_id):
+        return jsonify({"error": "session_id туура эмес"}), 400
 
     with db_lock:
         with connect_db() as db:
@@ -263,4 +315,5 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=int(os.getenv("PORT", "10000"))
-    )
+            )
+    
