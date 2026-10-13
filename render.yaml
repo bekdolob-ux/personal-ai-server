@@ -1,0 +1,20 @@
+
+services:
+  - type: web
+    name: personal-ai-server
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 server:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: meta-llama/llama-4-scout-17b-16e-instruct
+      - key: API_ACCESS_KEY
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+        
